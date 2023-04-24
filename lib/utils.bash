@@ -2,7 +2,6 @@
 
 set -euo pipefail
 
-# TODO: Ensure this is the correct GitHub homepage where releases can be downloaded for carp.
 GH_REPO="https://github.com/carp-lang/Carp"
 TOOL_NAME="carp"
 TOOL_TEST="carp --help"
@@ -12,9 +11,12 @@ fail() {
 	exit 1
 }
 
+version2d() {
+	echo "$1" | awk -F. '{ printf("%d%03d%03d\n"), $1, $2, $3}'
+}
+
 curl_opts=(-fsSL)
 
-# NOTE: You might want to remove this if carp is not hosted on GitHub releases.
 if [ -n "${GITHUB_API_TOKEN:-}" ]; then
 	curl_opts=("${curl_opts[@]}" -H "Authorization: token $GITHUB_API_TOKEN")
 fi
@@ -26,23 +28,44 @@ sort_versions() {
 
 list_github_tags() {
 	git ls-remote --tags --refs "$GH_REPO" |
-		grep -o 'refs/tags/.*' | cut -d/ -f3- |
-		sed 's/^v//' # NOTE: You might want to adapt this sed to remove non-version strings from tags
+		grep -o 'refs/tags/v[0-9.]*' | cut -d/ -f3- | sort -u |
+		sed 's/^v//'
 }
 
 list_all_versions() {
-	# TODO: Adapt this. By default we simply list the tag names from GitHub releases.
-	# Change this function if carp has other means of determining installable versions.
 	list_github_tags
 }
 
+platform() {
+	case "$OSTYPE" in
+	darwin*) echo "macos" ;;
+	linux*) echo "linux" ;;
+	*) fail "Unsupported platform" ;;
+	esac
+}
+
+arch() {
+	case "$(uname -m)" in
+	x86_64 | amd64) echo -n "x86_64" ;;
+	*) fail "Unsupported architecture" ;;
+	esac
+}
+
 download_release() {
-	local version filename url
+	local version filename url platform
 	version="$1"
 	filename="$2"
+	platform=$(platform)
 
-	# TODO: Adapt the release URL convention for carp
-	url="$GH_REPO/archive/v${version}.tar.gz"
+	if [ "$(version2d "${version}")" -ge "$(version2d "0.5.3")" ]; then
+		url="$GH_REPO/releases/download/v${version}/carp-v${version}-$(arch)-${platform}.zip"
+	else
+		case "$platform" in
+		linux) platform="Linux" ;;
+		macos) platform="macOS" ;;
+		esac
+		url="$GH_REPO/releases/download/v${version}_${platform}/v${version}.zip"
+	fi
 
 	echo "* Downloading $TOOL_NAME release $version..."
 	curl "${curl_opts[@]}" -o "$filename" -C - "$url" || fail "Could not download $url"
@@ -51,7 +74,7 @@ download_release() {
 install_version() {
 	local install_type="$1"
 	local version="$2"
-	local install_path="${3%/bin}/bin"
+	local install_path="$3"
 
 	if [ "$install_type" != "version" ]; then
 		fail "asdf-$TOOL_NAME supports release installs only"
@@ -59,12 +82,11 @@ install_version() {
 
 	(
 		mkdir -p "$install_path"
-		cp -r "$ASDF_DOWNLOAD_PATH"/* "$install_path"
+		cp -r "$ASDF_DOWNLOAD_PATH"/*/* "$install_path"
 
-		# TODO: Assert carp executable exists.
 		local tool_cmd
 		tool_cmd="$(echo "$TOOL_TEST" | cut -d' ' -f1)"
-		test -x "$install_path/$tool_cmd" || fail "Expected $install_path/$tool_cmd to be executable."
+		test -x "$install_path/bin/$tool_cmd" || fail "Expected $install_path/bin/$tool_cmd to be executable."
 
 		echo "$TOOL_NAME $version installation was successful!"
 	) || (
